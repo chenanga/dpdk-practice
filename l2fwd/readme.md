@@ -1,0 +1,1 @@
+python pkt_gen.py --iface "VMware Network Adapter VMnet10" --dst-ip 192.168.126.129 --rate 0 --burst 64 --threads 2 --cpus 0,1
