@@ -155,7 +155,7 @@ print_lcore_stats(void)
 	uint64_t rx, tx, dropped;
 	int i;
 
-	printf("\n========== Stats (interval) ==========\n");
+	printf("\n========== Stats (cumulative) ==========\n");
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		rx = lcore_stats[i].rx;
 		tx = lcore_stats[i].tx;
@@ -187,6 +187,7 @@ lpm_main_loop(__rte_unused void *dummy)
 	int i, nb_rx;
 	uint16_t portid, queueid;
 	struct lcore_conf *qconf;
+	struct l3fwd_tx_stats tx_stats;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 		US_PER_S * BURST_TX_DRAIN_US;
 	bool is_master = 0;
@@ -252,6 +253,8 @@ lpm_main_loop(__rte_unused void *dummy)
 					qconf->tx_mbufs[portid].len,
 					portid);
 				lcore_stats[lcore_id].tx += sent_pkts;
+				lcore_stats[lcore_id].dropped +=
+					qconf->tx_mbufs[portid].len - sent_pkts;
 						   
 				qconf->tx_mbufs[portid].len = 0;
 			}
@@ -273,14 +276,15 @@ lpm_main_loop(__rte_unused void *dummy)
 
 #if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
-			l3fwd_lpm_send_packets(nb_rx, pkts_burst,
+			tx_stats = l3fwd_lpm_send_packets(nb_rx, pkts_burst,
 						portid, qconf);
 #else
-			l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
+			tx_stats = l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
 #endif /* X86 */
 
-			lcore_stats[lcore_id].tx += nb_rx;
+			lcore_stats[lcore_id].tx += tx_stats.sent;
+			lcore_stats[lcore_id].dropped += tx_stats.dropped;
 
 		}
 

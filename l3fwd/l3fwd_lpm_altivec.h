@@ -141,7 +141,7 @@ l3fwd_lpm_process_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 	}
 }
 
-static inline void
+static inline struct l3fwd_tx_stats
 l3fwd_lpm_send_packets(int nb_rx, struct rte_mbuf **pkts_burst, uint8_t portid,
 		       struct lcore_conf *qconf)
 {
@@ -149,7 +149,7 @@ l3fwd_lpm_send_packets(int nb_rx, struct rte_mbuf **pkts_burst, uint8_t portid,
 
 	l3fwd_lpm_process_packets(nb_rx, pkts_burst, portid, dst_port, qconf,
 				  0);
-	send_packets_multi(qconf, pkts_burst, dst_port, nb_rx);
+	return send_packets_multi(qconf, pkts_burst, dst_port, nb_rx);
 }
 
 #endif /* __L3FWD_LPM_ALTIVEC_H__ */

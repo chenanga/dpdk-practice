@@ -92,11 +92,12 @@ process_packet(struct rte_mbuf *pkt, uint16_t *dst_port)
 /**
  * Send packets burst from pkts_burst to the ports in dst_port array
  */
-static __rte_always_inline void
+static __rte_always_inline struct l3fwd_tx_stats
 send_packets_multi(struct lcore_conf *qconf, struct rte_mbuf **pkts_burst,
 		uint16_t dst_port[SENDM_PORT_OVERHEAD(MAX_PKT_BURST)],
 		int nb_rx)
 {
+	struct l3fwd_tx_stats stats = {0, 0};
 	int32_t k;
 	int j = 0;
 	uint16_t dlp;
@@ -189,13 +190,21 @@ send_packets_multi(struct lcore_conf *qconf, struct rte_mbuf **pkts_burst,
 		pn = dst_port[j];
 		k = pnum[j];
 
-		if (likely(pn != BAD_PORT))
-			send_packetsx4(qconf, pn, pkts_burst + j, k);
-		else
+		if (likely(pn != BAD_PORT)) {
+			struct l3fwd_tx_stats ret;
+
+			ret = send_packetsx4(qconf, pn, pkts_burst + j, k);
+			stats.sent += ret.sent;
+			stats.dropped += ret.dropped;
+		} else {
 			for (m = j; m != j + k; m++)
 				rte_pktmbuf_free(pkts_burst[m]);
+			stats.dropped += k;
+		}
 
 	}
+
+	return stats;
 }
 
 static __rte_always_inline uint16_t

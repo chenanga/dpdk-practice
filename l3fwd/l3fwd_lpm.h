@@ -5,12 +5,14 @@
 #ifndef __L3FWD_LPM_H__
 #define __L3FWD_LPM_H__
 
-static __rte_always_inline void
+static __rte_always_inline struct l3fwd_tx_stats
 l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		struct lcore_conf *qconf)
 {
 	struct rte_ether_hdr *eth_hdr;
 	struct rte_ipv4_hdr *ipv4_hdr;
+	struct l3fwd_tx_stats stats = {0, 0};
+	uint16_t tx_len;
 	uint16_t dst_port;
 
 	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
@@ -24,10 +26,11 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		/* Check to make sure the packet is valid (RFC1812) */
 		if (is_valid_ipv4_pkt(ipv4_hdr, m->pkt_len, m->ol_flags) < 0) {
 			rte_pktmbuf_free(m);
-			return;
+			stats.dropped++;
+			return stats;
 		}
 #endif
-		 dst_port = lpm_get_ipv4_dst_port(ipv4_hdr, portid,
+		dst_port = lpm_get_ipv4_dst_port(ipv4_hdr, portid,
 						qconf->ipv4_lookup_struct);
 
 		if (dst_port >= RTE_MAX_ETHPORTS ||
@@ -46,7 +49,10 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
 				&eth_hdr->src_addr);
 
-		send_single_packet(qconf, m, dst_port);
+		tx_len = qconf->tx_mbufs[dst_port].len;
+		stats.sent = send_single_packet(qconf, m, dst_port);
+		if (tx_len + 1 == rx_burst_size)
+			stats.dropped = rx_burst_size - stats.sent;
 	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
 		/* Handle IPv6 headers.*/
 		struct rte_ipv6_hdr *ipv6_hdr;
@@ -68,17 +74,24 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
 				&eth_hdr->src_addr);
 
-		send_single_packet(qconf, m, dst_port);
+		tx_len = qconf->tx_mbufs[dst_port].len;
+		stats.sent = send_single_packet(qconf, m, dst_port);
+		if (tx_len + 1 == rx_burst_size)
+			stats.dropped = rx_burst_size - stats.sent;
 	} else {
 		/* Free the mbuf that contains non-IPV4/IPV6 packet */
 		rte_pktmbuf_free(m);
+		stats.dropped++;
 	}
+
+	return stats;
 }
 
-static inline void
+static inline struct l3fwd_tx_stats
 l3fwd_lpm_no_opt_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 				uint16_t portid, struct lcore_conf *qconf)
 {
+	struct l3fwd_tx_stats stats = {0, 0};
 	int32_t j;
 
 	/* Prefetch first packets */
@@ -87,14 +100,25 @@ l3fwd_lpm_no_opt_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 
 	/* Prefetch and forward already prefetched packets. */
 	for (j = 0; j < (nb_rx - PREFETCH_OFFSET); j++) {
+		struct l3fwd_tx_stats ret;
+
 		rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[
 				j + PREFETCH_OFFSET], void *));
-		l3fwd_lpm_simple_forward(pkts_burst[j], portid, qconf);
+		ret = l3fwd_lpm_simple_forward(pkts_burst[j], portid, qconf);
+		stats.sent += ret.sent;
+		stats.dropped += ret.dropped;
 	}
 
 	/* Forward remaining prefetched packets */
-	for (; j < nb_rx; j++)
-		l3fwd_lpm_simple_forward(pkts_burst[j], portid, qconf);
+	for (; j < nb_rx; j++) {
+		struct l3fwd_tx_stats ret;
+
+		ret = l3fwd_lpm_simple_forward(pkts_burst[j], portid, qconf);
+		stats.sent += ret.sent;
+		stats.dropped += ret.dropped;
+	}
+
+	return stats;
 }
 
 #endif /* __L3FWD_LPM_H__ */

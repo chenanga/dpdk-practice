@@ -62,10 +62,16 @@ rfc1812_process(struct rte_ipv4_hdr *ipv4_hdr, uint16_t *dp, uint32_t ptype)
 #define	rfc1812_process(mb, dp, ptype)	do { } while (0)
 #endif /* DO_RFC_1812_CHECKS */
 
-static __rte_always_inline void
+struct l3fwd_tx_stats {
+	uint32_t sent;
+	uint32_t dropped;
+};
+
+static __rte_always_inline struct l3fwd_tx_stats
 send_packetsx4(struct lcore_conf *qconf, uint16_t port, struct rte_mbuf *m[],
 		uint32_t num)
 {
+	struct l3fwd_tx_stats stats = {0, 0};
 	uint32_t len, j, n;
 
 	len = qconf->tx_mbufs[port].len;
@@ -76,12 +82,14 @@ send_packetsx4(struct lcore_conf *qconf, uint16_t port, struct rte_mbuf *m[],
 	 */
 	if (num >= tx_burst_size && len == 0) {
 		n = rte_eth_tx_burst(port, qconf->tx_queue_id[port], m, num);
+		stats.sent = n;
+		stats.dropped = num - n;
 		if (unlikely(n < num)) {
 			do {
 				rte_pktmbuf_free(m[n]);
 			} while (++n < num);
 		}
-		return;
+		return stats;
 	}
 
 	/*
@@ -117,7 +125,8 @@ send_packetsx4(struct lcore_conf *qconf, uint16_t port, struct rte_mbuf *m[],
 	/* enough pkts to be sent */
 	if (unlikely(len == MAX_PKT_BURST)) {
 
-		send_burst(qconf, MAX_PKT_BURST, port);
+		stats.sent = send_burst(qconf, MAX_PKT_BURST, port);
+		stats.dropped = MAX_PKT_BURST - stats.sent;
 
 		/* copy rest of the packets into the TX buffer. */
 		len = num - n;
@@ -148,6 +157,7 @@ send_packetsx4(struct lcore_conf *qconf, uint16_t port, struct rte_mbuf *m[],
 
 exit:
 	qconf->tx_mbufs[port].len = len;
+	return stats;
 }
 
 #endif /* _L3FWD_COMMON_H_ */
