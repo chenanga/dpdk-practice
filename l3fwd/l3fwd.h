@@ -115,25 +115,27 @@ extern uint32_t max_pkt_len;
 extern uint32_t rx_burst_size;
 extern uint32_t mb_mempool_cache_size;
 
-/* Send burst of packets on an output interface */
+/* Send burst of packets on an output interface; return packets sent. */
 static inline int
 send_burst(struct lcore_conf *qconf, uint16_t n, uint16_t port)
 {
 	struct rte_mbuf **m_table;
-	int ret;
+	int ret, actual_sent;
 	uint16_t queueid;
 
 	queueid = qconf->tx_queue_id[port];
 	m_table = (struct rte_mbuf **)qconf->tx_mbufs[port].m_table;
 
+	actual_sent = 0;
 	ret = rte_eth_tx_burst(port, queueid, m_table, n);
+	actual_sent = ret;
 	if (unlikely(ret < n)) {
 		do {
 			rte_pktmbuf_free(m_table[ret]);
 		} while (++ret < n);
 	}
 
-	return 0;
+	return actual_sent;
 }
 
 /* Enqueue a single packet, and send burst if queue is filled */
@@ -142,6 +144,7 @@ send_single_packet(struct lcore_conf *qconf,
 		   struct rte_mbuf *m, uint16_t port)
 {
 	uint16_t len;
+	int sent = 0;
 
 	len = qconf->tx_mbufs[port].len;
 	qconf->tx_mbufs[port].m_table[len] = m;
@@ -149,12 +152,12 @@ send_single_packet(struct lcore_conf *qconf,
 
 	/* enough pkts to be sent */
 	if (unlikely(len == rx_burst_size)) {
-		send_burst(qconf, rx_burst_size, port);
+		sent = send_burst(qconf, rx_burst_size, port);
 		len = 0;
 	}
 
 	qconf->tx_mbufs[port].len = len;
-	return 0;
+	return sent;
 }
 
 #ifdef DO_RFC_1812_CHECKS

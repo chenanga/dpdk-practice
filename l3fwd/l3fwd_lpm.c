@@ -41,6 +41,13 @@
 static struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 static struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 
+struct lcore_stat {
+	uint64_t rx;
+	uint64_t tx;
+	uint64_t dropped;
+} __rte_cache_aligned;
+struct lcore_stat lcore_stats[RTE_MAX_LCORE];
+
 /* Performing LPM-based lookups. 8< */
 static inline uint16_t
 lpm_get_ipv4_dst_port(const struct rte_ipv4_hdr *ipv4_hdr,
@@ -140,26 +147,78 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 #include "l3fwd_lpm.h"
 #endif
 
+
+static void
+print_lcore_stats(void)
+{
+	uint64_t total_rx = 0, total_tx = 0, total_dropped = 0;
+	uint64_t rx, tx, dropped;
+	int i;
+
+	printf("\n========== Stats (interval) ==========\n");
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
+		rx = lcore_stats[i].rx;
+		tx = lcore_stats[i].tx;
+		dropped = lcore_stats[i].dropped;
+
+		total_rx += rx;
+		total_tx += tx;
+		total_dropped += dropped;
+
+		if (rx != 0 || tx != 0 || dropped != 0) {
+			printf(" - lcore %u: rx=%" PRIu64 " tx=%" PRIu64
+			       " dropped=%" PRIu64 "\n",
+			       i, rx, tx, dropped);
+		}
+	}
+
+	printf("------------------------------------------\n");
+	printf(" - TOTAL  : rx=%" PRIu64 " tx=%" PRIu64 " dropped=%" PRIu64 "\n",
+	       total_rx, total_tx, total_dropped);
+}
+
 /* main processing loop */
 int
 lpm_main_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
-	uint64_t prev_tsc, diff_tsc, cur_tsc;
+	uint64_t prev_tsc, diff_tsc, cur_tsc, last_print_tsc;
 	int i, nb_rx;
 	uint16_t portid, queueid;
 	struct lcore_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 		US_PER_S * BURST_TX_DRAIN_US;
+	bool is_master = 0;
+	uint32_t sent_pkts;
+	#define STAT_PRINT_INTERVAL 1 /* seconds */
 
 	lcore_id = rte_lcore_id();
 	qconf = &lcore_conf[lcore_id];
+	is_master = (lcore_id == rte_get_main_lcore());
+
+	lcore_stats[lcore_id].rx = 0;
+	lcore_stats[lcore_id].tx = 0;
+	lcore_stats[lcore_id].dropped = 0;
+	last_print_tsc = rte_rdtsc();
 
 	const uint16_t n_rx_q = qconf->n_rx_queue;
 	const uint16_t n_tx_p = qconf->n_tx_port;
 	if (n_rx_q == 0) {
 		RTE_LOG(INFO, L3FWD, "lcore %u has nothing to do\n", lcore_id);
+
+		if (!is_master)
+			return 0;
+
+		while (!force_quit) {
+			uint64_t now = rte_rdtsc();
+			if ((now - last_print_tsc) > rte_get_tsc_hz() * STAT_PRINT_INTERVAL) {
+				print_lcore_stats();
+				last_print_tsc = now;
+			}
+			rte_delay_ms(10);
+		}
+
 		return 0;
 	}
 
@@ -189,9 +248,11 @@ lpm_main_loop(__rte_unused void *dummy)
 				portid = qconf->tx_port_id[i];
 				if (qconf->tx_mbufs[portid].len == 0)
 					continue;
-				send_burst(qconf,
+				sent_pkts = send_burst(qconf,
 					qconf->tx_mbufs[portid].len,
 					portid);
+				lcore_stats[lcore_id].tx += sent_pkts;
+						   
 				qconf->tx_mbufs[portid].len = 0;
 			}
 
@@ -208,6 +269,7 @@ lpm_main_loop(__rte_unused void *dummy)
 				rx_burst_size);
 			if (nb_rx == 0)
 				continue;
+			lcore_stats[lcore_id].rx += nb_rx;
 
 #if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
@@ -217,6 +279,9 @@ lpm_main_loop(__rte_unused void *dummy)
 			l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
 #endif /* X86 */
+
+			lcore_stats[lcore_id].tx += nb_rx;
+
 		}
 
 		cur_tsc = rte_rdtsc();
