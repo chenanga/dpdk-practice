@@ -99,24 +99,38 @@ l3fwd_lpm_process_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 			  uint16_t portid, uint16_t *dst_port,
 			  struct lcore_conf *qconf, const uint8_t do_step3)
 {
-	int32_t j;
-	__m128i dip[MAX_PKT_BURST / FWDSTEP];
-	uint32_t ipv4_flag[MAX_PKT_BURST / FWDSTEP];
-	const int32_t k = RTE_ALIGN_FLOOR(nb_rx, FWDSTEP);
+    int32_t j;
+    __m128i dip[MAX_PKT_BURST / FWDSTEP];
+    uint32_t ipv4_flag[MAX_PKT_BURST / FWDSTEP];
+    const int32_t k = RTE_ALIGN_FLOOR(nb_rx, FWDSTEP);
 	const int32_t m = nb_rx % FWDSTEP;
 
-	if (k) {
-		processx4_step1_prefetch(pkts_burst);
+    if (k) {
+        /* L2 prefetch 更远的包（2 组之后） */
+        for (int i = 0; i < FWDSTEP && i < nb_rx; i++) {
+            rte_prefetch2(pkts_burst[i]);
+            rte_prefetch2(rte_pktmbuf_mtod(pkts_burst[i], void *));
+        }
+        /* L1 prefetch 下一组 */
+        processx4_step1_prefetch(pkts_burst);
 
-		for (j = 0; j != k - FWDSTEP; j += FWDSTEP) {
-			processx4_step1_prefetch(&pkts_burst[j + FWDSTEP]);
-			processx4_step1(&pkts_burst[j], &dip[j / FWDSTEP],
-					&ipv4_flag[j / FWDSTEP]);
-		}
-
-		processx4_step1(&pkts_burst[j], &dip[j / FWDSTEP],
-				&ipv4_flag[j / FWDSTEP]);
-	}
+        for (j = 0; j != k - FWDSTEP; j += FWDSTEP) {
+            /* 提前 2 组做 L2 prefetch */
+            if (j + 2 * FWDSTEP < nb_rx) {
+                for (int i = 0; i < FWDSTEP; i++) {
+                    rte_prefetch2(pkts_burst[j + 2 * FWDSTEP + i]);
+                    rte_prefetch2(rte_pktmbuf_mtod(
+                        pkts_burst[j + 2 * FWDSTEP + i], void *));
+                }
+            }
+            /* 提前 1 组做 L1 prefetch */
+            processx4_step1_prefetch(&pkts_burst[j + FWDSTEP]);
+            processx4_step1(&pkts_burst[j], &dip[j / FWDSTEP],
+                            &ipv4_flag[j / FWDSTEP]);
+        }
+        processx4_step1(&pkts_burst[j], &dip[j / FWDSTEP],
+                        &ipv4_flag[j / FWDSTEP]);
+    }
 
 	for (j = 0; j != k; j += FWDSTEP)
 		processx4_step2(qconf, dip[j / FWDSTEP],
